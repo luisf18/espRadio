@@ -1,13 +1,28 @@
 #ifndef ESPNOW_H
 #define ESPNOW_H
 
+//#define ESP8266 // <-- comentar isso
+
 #include "Arduino.h"
 
 /*/  
     
     espRadio V2.0
 
-    RX: ok (apenas recebe pacotes)
+    tanto RX como TX recebem e enviam.
+    
+    -----------------------------------------------------------------------
+    |                                 |  TX             |  RX             |
+    -----------------------------------------------------------------------
+    | envia pacotes frequentementes?  |  sim            |  Pode           |
+    | recebe pacotes frequentementes? |  Pode           |  sim            |
+    -----------------------------------------------------------------------
+    | Durante o inicio do bind        | envia e recebe  | recebe          |
+    -----------------------------------------------------------------------
+    | Ao receber pacote de bind       | volta ao estado | volta ao estado |
+    |                                 | anterior        | anterior e      |
+    |                                 |                 | envia resposta  |
+    -----------------------------------------------------------------------
 
 /*/  
 
@@ -32,61 +47,7 @@ void ESP_RADIO_onRecive(const uint8_t * mac,const uint8_t *incomingData, int len
 void ESP_RADIO_onRecive(uint8_t * mac, uint8_t *incomingData, uint8_t len);
 #endif
 
-uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
-//typedef struct espRadio_MAC_t{
-//  
-//}espRadio_MAC_t;
-
-// Structure V2.0
-typedef struct pacote {
-    int32_t code = 1804;
-    int32_t len;
-    int32_t ID;
-    int32_t ch[20];
-    uint8_t MAC_rx[6];
-} pacote;
-
-typedef struct pacote_bind { // pacote exclusivo para bind
-    int32_t  code = 1804;
-    int32_t  len;
-    int32_t  ID;
-    char     name[20];
-    int32_t  device_ID;
-    uint32_t color;
-} pacote_bind;
-
-
-#define Devices_max_len 16
-
-// Struct Devices
-typedef struct espRadio_device_t {
-  uint8_t  MAC[6];
-  int32_t  ID;
-  char     name[20];
-  uint32_t color;
-  uint8_t  valid;
-} espRadio_device_t;
-
-typedef struct espRadio_config_t {
-   int32_t type;
-   int32_t color;
-   int32_t ID;
-   char    name[20];
-} espRadio_config_t;
-
-
-// ==/  Memory data  /=====================================================================
-
-#define ESPRADIO_USE_LITTLEFS // comente para desabilitar
-
-#if defined( ESPRADIO_USE_LITTLEFS )
-#include <FS.h>
-#include <LittleFS.h>
-#endif
-
-// ========================================================================================
-
+// ==/  Structs  /=====================================================================
 
 /*/
     siginificados:
@@ -114,9 +75,69 @@ typedef struct espRadio_config_t {
 
 /*/
 
+
+// pacotes de comunicação --------------------
+
+typedef struct pacote {
+    int32_t code = 1804;
+    int32_t len;
+    int32_t ID;
+    int32_t ch[20];
+    uint8_t MAC_rx[6];
+} pacote;
+
+typedef struct pacote_bind { // pacote exclusivo para bind
+    int32_t  code = 1804;
+    int32_t  len;
+    int32_t  ID;
+    char     name[20];
+    int32_t  device_ID;
+    uint32_t color;
+} pacote_bind;
+
+
+// Dispositivos ------------------------------
+
+uint8_t broadcastAddress[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+#define Devices_max_len 16
+
+typedef struct espRadio_device_t {
+  uint8_t  MAC[6];
+  int32_t  ID;
+  char     name[20];
+  uint32_t color;
+  uint8_t  valid;
+} espRadio_device_t;
+
+typedef struct espRadio_config_t {
+   int32_t type;
+   int32_t color;
+   int32_t ID;
+   char    name[20];
+} espRadio_config_t;
+
+// ====================================================================================
+
+
+
+// ==/  Memory data  /=====================================================================
+
+#define ESPRADIO_USE_LITTLEFS // comente para desabilitar
+
+#if defined( ESPRADIO_USE_LITTLEFS )
+#include <FS.h>
+#include <LittleFS.h>
+#endif
+
+// ========================================================================================
+
+
 class ESP_RADIO{
+  
   public:
 
+    //====/ ENUMs /==============================
     enum ACTIONS{
       
       RISE = 0,
@@ -155,10 +176,14 @@ class ESP_RADIO{
     enum MODES{
       NORMAL = 0, // check MAC destino
       PORT,       // só checa a porta "ID"
-      PEER        // realiza pedido de conexão e pareamento com confirmação de TX e RX
+      PEER,       // realiza pedido de conexão e pareamento com confirmação de TX e RX
+      NORMAL_broadcast
     };
 
-    ////// ESPNOW /////////////////////////////////////////////////////////////////
+    //====/ ENUMs /=========================================
+
+    //====/ begin and deinit /==============================
+    
     void deinit(){
       esp_now_deinit();
       WiFi.disconnect();
@@ -167,76 +192,127 @@ class ESP_RADIO{
     
     void begin( int _type, int (*f)(int) ){
 
-      // get self mac
-      WiFi.macAddress(Devices[0].MAC);
-      // Serial.print("SELF MAC: ");
-      // print_MAC(Devices[0].MAC);
-      // Serial.println(" <<");
-
+      // Configuração basica
       type = _type;
       function_type = _type;
       handle_espRadio_f = f;
+      WiFi.macAddress(Devices[0].MAC); // get self mac
 
+      // get data from memory
       MEMORY_begin();
       //read_config();
       read_devices();
 
-      mode( NORMAL );
+      // Inicia em modo NORMAL
+      mode( NORMAL_broadcast );
+      
+      // Init ESPNOW --------------------------------
       Serial.println("ESPNOW - iniciando...");
+      
       WiFi.disconnect();
       WiFi.mode(WIFI_STA);
-      if(esp_now_init() != 0){ Serial.println("Error initializing ESP-NOW"); return; }
+      
+      if(esp_now_init() != 0){
+        Serial.println("Error initializing ESP-NOW");
+        return;
+      }
+
       Serial.println("\n\nBEGIN ESPNOW!!");
 
+
+      // Config. self device ------------------------
       if( function_type == RX  ){ // Begin ESPNOW RX
+        
         #if defined(ESP8266)
         esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
         #endif
-        esp_now_register_recv_cb(ESP_RADIO_onRecive);
-        peer( broadcastAddress, true );
-        if(type == RX_monitor) Flag_send = true;
+
+        enable_reciving();
+
+        if(type == RX_monitor) enable_sending();
+        
         pack_bind.ID = 102;
+
       }else if( function_type == TX ){ // Begin ESPNOW TX
-        Flag_send = true;
+      
         #if defined(ESP8266)
         esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
         #endif
-        peer( broadcastAddress, true );
-        if( type == TX_monitor ){
-          esp_now_register_recv_cb(ESP_RADIO_onRecive);
-        }
+        
+        enable_sending();
+
+        if( type == TX_monitor ) enable_reciving();
+
       }
+
       //if( mode == 0 ) esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
     }
 
 
+    //// MODOS ////////////////////////////////////////////////////////////
+
+    void enable_reciving(){
+      Flag_recive = true;
+      esp_now_register_recv_cb(ESP_RADIO_onRecive);
+    }
+
+    void disable_reciving(){
+      Flag_recive = false;
+      esp_now_unregister_recv_cb();
+    }
+
+    void enable_sending(){
+      Flag_send = true;
+      peer( broadcastAddress, true );
+    }
+
+    void disable_sending(){
+      Flag_send = false;
+      del_peer( broadcastAddress );
+    }
+
+    int mode(){
+      return Mode;
+    }
+
+    void mode( int _mode ){
+      switch(_mode){
+        case NORMAL: call( START_MODE_NORMAL ); Mode = NORMAL; break;
+        case PORT:   call( START_MODE_PORT   ); Mode = PORT;   break;
+      }
+    }
+
+    int  port(){
+      return Port;
+    }
+
+    void port( uint8_t _port ){
+      Port = _port;
+    }
+
+    // int  rx_target(){ return Port; }
+    // void rx_target( uint8_t _port ){ Port = _port; }
+
     //// BIND /////////////////////////////////////////////////////////////
 
-    void set_reciving(boolean on){
-      if( on ) esp_now_register_recv_cb(ESP_RADIO_onRecive);
-      else esp_now_unregister_recv_cb();
-    }
-
-    boolean binding(){
-      return Flag_bind;
-    }
-
-    boolean bind(){
-      return Flag_bind;
-    }
-    
+    boolean binding(){ return Flag_bind; }
+    boolean bind(){ return Flag_bind; }
     void bind(boolean _bind){
       if(_bind) bind_on(); else bind_off();
     }
 
     void bind_on(){
+      
       Flag_bind = true;
       call( BIND_ON );
+
+      // update pack_bind
       memcpy(pack_bind.name, Devices[0].name, 20);
       pack_bind.color = Devices[0].color;
+
       if( function_type == TX ){
         pack_bind.ID = 101;
-        set_reciving(true);
+        enable_reciving();
       }else{
         pack_bind.ID = 102;
       }
@@ -248,29 +324,77 @@ class ESP_RADIO{
       if( type == TX ){ esp_now_unregister_recv_cb(); }
     }
 
-    int mode(){
-      return Mode;
+    /// Dispositivos /////////////////////////////////////////////////////////////////
+
+    void print_device( espRadio_device_t D ){
+      char mac[18];
+      snprintf(mac, 18, "%02x:%02x:%02x:%02x:%02x:%02x", D.MAC[0], D.MAC[1], D.MAC[2], D.MAC[3], D.MAC[4], D.MAC[5]);
+      Serial.printf( "[DEVICE][ MAC: %s ][ Name: %s ][ ID:%d Color:#%06x ][ %s ]\n", mac, D.name, D.ID, D.color, D.valid ? "valido":"invalido" );
     }
 
-    void mode( int _mode ){
-      switch(_mode){
-        case NORMAL: if( handle_espRadio_f != nullptr ) handle_espRadio_f( START_MODE_NORMAL ); Mode = NORMAL; break;
-        case PORT:   if( handle_espRadio_f != nullptr ) handle_espRadio_f( START_MODE_PORT );   Mode = PORT;   break;
+    espRadio_device_t * device( uint8_t i ){ return ( i>=Devices_max_len ?  Devices+Devices_max_len-1 : Devices+i ); }
+
+    espRadio_device_t device_connect(){
+      return Devices[device_connect_number];
+    }
+
+    void self_device( const char *_name, int ID, uint32_t color ){
+      memcpy( Devices[0].name, _name, 20);
+      Devices[0].ID    = ID;
+      Devices[0].color = color;
+    }
+
+    void add_device( const char *_name, int ID, uint32_t color, uint8_t _MAC_0, uint8_t _MAC_1, uint8_t _MAC_2, uint8_t _MAC_3, uint8_t _MAC_4, uint8_t _MAC_5 ){
+      uint8_t mac[6];
+      mac[0] = _MAC_0;
+      mac[1] = _MAC_1;
+      mac[2] = _MAC_2;
+      mac[3] = _MAC_3;
+      mac[4] = _MAC_4;
+      mac[5] = _MAC_5;
+      add_device( _name, ID, color, mac );
+    }
+
+    boolean add_device( const char *_name, int ID, uint32_t color, uint8_t *mac ){
+      int i = check_mac( mac );
+      if( i < 0 ){
+        if( Devices_len < Devices_max_len ){
+          i = Devices_len;
+        }else{
+          return false;
+        }
       }
+      add_device( _name, ID, color, mac, i );
+      return true;
     }
 
-    int port(){
-      return Port;
+    void add_device( const char *_name, int ID, uint32_t color, uint8_t *mac, uint8_t _index ){
+      
+      if( _index >= Devices_max_len ) return;
+
+      memcpy( Devices[_index].MAC,    mac,  6);
+      memcpy( Devices[_index].name, _name, 20);
+      Devices[_index].ID    = ID;
+      Devices[_index].color = color;
+      Devices_len++;
+
     }
 
-    void port( uint8_t _port ){
-      Port = _port;
+    //// MAC functions ////
+
+    int check_mac(uint8_t * mac){
+      for(uint8_t i=0;i<Devices_len;i++){
+        if( memcmp( mac, Devices[i].MAC, 6 ) == 0 ) return i;
+      }
+      return -1; 
     }
 
-    ///////////////////////////////////////////////////////////////////////////////
-    ////// TX MAC lists ///////////////////////////////////////////////////////////
-    ///////////////////////////////////////////////////////////////////////////////
-    // pacote pack_tx;
+    void print_MAC(){ Serial.print("RADIO MAC: " + WiFi.macAddress() ); }
+    void print_MAC( uint8_t *mac ){
+      char macStr[18];
+      snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+      Serial.printf("[ MAC: %s ]",macStr);
+    }
 
     /// Funções basicas ESPNOW /////////////////////////////////////////////////////
 
@@ -301,6 +425,8 @@ class ESP_RADIO{
       return ok;
     }
 
+    /// Envio de pacotes /////////////////////////////////////////////////////////////////
+    
     pacote      pack_tx;
     pacote_bind pack_bind;
 
@@ -332,62 +458,17 @@ class ESP_RADIO{
       }
     }
 
-    ////// MAC list ///////////////////////////////////////////////////////////////
-    pacote pack_rx;
-    
-    espRadio_device_t * device( uint8_t i ){ return ( i>=Devices_max_len ?  Devices+Devices_max_len-1 : Devices+i ); }
-
-    void self_device( const char *_name, int ID, uint32_t color ){
-      memcpy( Devices[0].name, _name, 20);
-      Devices[0].ID     = ID;
-      Devices[0].color = color;
-    }
-
-    void add_device( const char *_name, int ID, uint32_t color, uint8_t _MAC_0, uint8_t _MAC_1, uint8_t _MAC_2, uint8_t _MAC_3, uint8_t _MAC_4, uint8_t _MAC_5 ){
-      add_device( _name, ID, color, _MAC_0, _MAC_1, _MAC_2, _MAC_3, _MAC_4, _MAC_5, Devices_len );
-    }
-
-    void add_device( const char *_name, int ID, uint32_t color, uint8_t _MAC_0, uint8_t _MAC_1, uint8_t _MAC_2, uint8_t _MAC_3, uint8_t _MAC_4, uint8_t _MAC_5, uint8_t _index ){
-      if( _index >= Devices_max_len ) return;
-      memcpy( Devices[_index].name, _name, 20);
-
-      Serial.print( "NAME: " );
-      Serial.println( Devices[_index].name );
-
-      Devices[_index].ID     = ID;
-      Devices[_index].color  = color;
-      Devices[_index].MAC[0] = _MAC_0;
-      Devices[_index].MAC[1] = _MAC_1;
-      Devices[_index].MAC[2] = _MAC_2;
-      Devices[_index].MAC[3] = _MAC_3;
-      Devices[_index].MAC[4] = _MAC_4;
-      Devices[_index].MAC[5] = _MAC_5;
-
-      Devices_len++;
-    }
-
-    int check_mac(uint8_t * mac){
-      for(uint8_t i=0;i<Devices_len;i++){
-        if( memcmp( mac, Devices[i].MAC, 6 ) == 0 ) return i;
-      }
-      return -1; 
-    }
-
-    void print_MAC(){ Serial.print("RADIO MAC: " + WiFi.macAddress() ); }
-    void print_MAC( uint8_t *mac ){
-      char macStr[18];
-      snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-      Serial.printf("[ MAC: %s ]",macStr);
-    }
-
-    ////// RX /////////////////////////////////////////////////////////////////////
+    /// Atualização /////////////////////////////////////////////////////////////////
+    pacote   pack_rx;
     uint16_t failsafe_delay = 400;
     uint16_t bind_delay     = 100;
     uint16_t send_delay     = 100;
     uint16_t device_connect_number = 0;
 
-    espRadio_device_t device_connect(){
-      return Devices[device_connect_number];
+    boolean online(){return Flag_online;}
+
+    int call(int action){
+      return ( handle_espRadio_f == nullptr ? 0 : handle_espRadio_f( action ) );
     }
 
     void update(){
@@ -411,41 +492,37 @@ class ESP_RADIO{
         if( millis() >= failsafe_timeout ){
           Flag_online = false;
           del_peer( Devices[device_connect_number].MAC );
-          if( handle_espRadio_f != nullptr ) handle_espRadio_f( FALL );
+          call( FALL );
         }
       }
 
     }
 
+    /// Recebimento de pacotes /////////////////////////////////////////////////////////////////
+
     void onRecive(const uint8_t * _mac, const uint8_t *incomingData, uint8_t len){
       
+      // Copy MAC
       uint8_t mac[6];
       memcpy(mac,_mac,6);
-      
-      // print
-      Serial.printf("Bytes received: %d ",len);
-      print_MAC( mac );
       
       // Device check
       int device_i = check_mac(mac);
       
-      // print
-      Serial.printf("[ Device: %d ]",device_i);
-      
-      // atua
+      // atualiza
       if( Flag_bind || device_i >= 0 ){
 
+        // recebe pacote
         pacote pack;
         memcpy(&pack, incomingData, sizeof(pack));
         
         if(pack.code == 1804){
 
+          // verifica bind
           if( Flag_bind ){
-            if( pack.ID == 101 || pack.ID == 102 ){ // TX -> RX , RX -> TX
-              // send self mac to TX...
-              Flag_bind = false;
 
-              // Save new device
+            if( ( function_type == RX && pack.ID == 101 ) || ( function_type == TX && pack.ID == 102 ) ){ // TX -> RX , RX -> TX
+              // obtem informações de bind
               pacote_bind PB;
               memcpy(&PB, incomingData, sizeof(PB));
 
@@ -456,26 +533,31 @@ class ESP_RADIO{
               }
 
               if( device_i >= 0 ){
-                memcpy(Devices[device_i].MAC, mac, 6);
-                Devices[device_i].color = PB.color;
-                Devices[device_i].ID    = PB.device_ID;
-                memcpy(Devices[device_i].name, PB.name, 20);
+                
+                // adiciona o dispositivo e salva na flash
+                add_device( PB.name, PB.device_ID, PB.color, mac, device_i );
                 save_devices();
-                bind_off();
-                call( BINDED );
 
+                // pareia para poder enviar pacotes diretamente
+                device_connect_number = device_i;
                 peer( Devices[device_connect_number].MAC, true );
                 
-                if( pack.ID == 101 ){
+                // Se for RX envia um pacote de bind de volta
+                if( function_type == RX ){
                   send_bind();
                   send_bind();
                 }
+
+                // encerra o bind
+                bind_off();
+                call( BINDED );
 
               }else{
                 call( BIND_FAIL );
               }
 
             }
+
           }else if( pack.ID <= 100 ){ // reciving...
 
             boolean valid = false;
@@ -502,16 +584,12 @@ class ESP_RADIO{
 
         }
       }
+      
       // print
-      Serial.println();
+      Serial.printf("Bytes received: %d ",len);
+      print_MAC( mac );
+      Serial.printf("[ Device: %d ]\n",device_i);
     }
-
-    boolean online(){return Flag_online;}
-
-    int call(int action){
-      return ( handle_espRadio_f == nullptr ? 0 : handle_espRadio_f( action ) );
-    }
-
 
 
     //// MEMORY ///////////////////////////////////////////////////////////////
@@ -580,13 +658,52 @@ class ESP_RADIO{
 
     //// LITTLEFS /////////////////////////////////////////////////////////////
     #if defined( ESPRADIO_USE_LITTLEFS )
-    
+
     boolean LITTLEFS_begin(){
       // Serial.println("Mount LittleFS");
-      if (!LittleFS.begin()){
+      #ifdef ESP32
+      if (!LittleFS.begin(true)){
         Serial.println("[ERROR] LittleFS mount failed!");
         return false;
       }
+      #else
+      if (!LittleFS.begin()){
+        Serial.println("[ERROR] LittleFS mount failed!");
+        LittleFS.format();
+        return false;
+      }
+      #endif
+      return true;
+    }
+
+    boolean LITTLEFS_writeFile(const char * path, const char * message){
+      Serial.printf("Writing file: %s\r\n", path);
+      File file = LittleFS.open(path, "w");
+      if(!file){
+          Serial.println("- failed to open file for writing");
+          return false;
+      }
+      if(file.print(message)){
+          Serial.println("- file written");
+      } else {
+          Serial.println("- write failed");
+      }
+      file.close();
+      return true;
+    }
+
+    boolean LITTLEFS_readFile(const char * path, String *msg ){
+      Serial.printf("[LITTLEFS] Reading file: %s\r\n", path);
+      
+      File file = LittleFS.open(path,"r");
+      if(!file || file.isDirectory()){
+          Serial.println(" - failed to open file for reading");
+          return false;
+      }
+      *msg = file.readString();
+      file.close();
+
+      Serial.println(" - ok");
       return true;
     }
 
@@ -594,13 +711,9 @@ class ESP_RADIO{
     boolean LITTLEFS_read_devices(){
       
       // le o arquivo
-      File file = LittleFS.open(path_devices,"r");
-      if(!file){
-        Serial.println("[ERRO] Failed to open file for reading");
-        return false;
-      }
-      String content = file.readString();
-      file.close();
+      String content;
+      
+      if( !LITTLEFS_readFile(path_devices,&content) ) return false;
 
       // printa o arquivo
       Serial.println( "Reading devices from flash..." );
@@ -677,17 +790,15 @@ class ESP_RADIO{
 
     boolean LITTLEFS_read_config(){
       // le o arquivo
-      File file = LittleFS.open(path_config,"r");
-      if(!file){
-        Serial.println("[ERRO] Failed to open file for reading");
-        return false;
-      }
-      
-      String content = file.readString();
+      String content;
+      if( !LITTLEFS_readFile(path_config,&content) ) return false;
       Serial.println( "[FILE] Devices:\n" + content + "\n" );
-      
-      file.close();
       return true;
+    }
+
+    
+    void LITTLEFS_save_config(){
+      //...
     }
     
     void LITTLEFS_save_devices(){
@@ -711,19 +822,8 @@ class ESP_RADIO{
 
     }
 
-    void LITTLEFS_save_config(){
-      //...
-    }
-
     #endif
     ///////////////////////////////////////////////////////////////////////////
-
-
-    void print_device( espRadio_device_t D ){
-      char mac[18];
-      snprintf(mac, 18, "%02x:%02x:%02x:%02x:%02x:%02x", D.MAC[0], D.MAC[1], D.MAC[2], D.MAC[3], D.MAC[4], D.MAC[5]);
-      Serial.printf( "[DEVICE][ MAC: %s ][ Name: %s ][ ID:%d Color:#%06x ][ %s ]\n", mac, D.name, D.ID, D.color, D.valid ? "valido":"invalido" );
-    }
 
     
   private:
@@ -752,15 +852,10 @@ class ESP_RADIO{
     //boolean Flag_change = false;
     boolean Flag_bind   = false;
     boolean Flag_send   = false;
+    boolean Flag_recive = false;
 
     // Callback function
     int (*handle_espRadio_f)(int) = nullptr;
-
-    // RX ////////////////////////////
-    // ...
-    
-    // TX ////////////////////////////
-    // ...
     
 };
 
