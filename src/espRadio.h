@@ -57,6 +57,15 @@
   esp_now_peer_info_t espnow_local_info;
 #endif
 
+ // Memory
+#define ESPRADIO_USE_LITTLEFS // comente para desabilitar
+
+#if defined( ESPRADIO_USE_LITTLEFS )
+#include <FS.h>
+#include <LittleFS.h>
+#endif
+
+
 // ========================================================================================
 // CALLBACK external
 // ========================================================================================
@@ -132,8 +141,8 @@ typedef struct espRadio_device_t {
 typedef struct espRadio_config_t {
    uint8_t  Radio_role = 0; // RX
    uint8_t  telemetry  = false;
-   uint32_t delay_bind = 50;
-   uint32_t delay_send = 100;
+   uint32_t delay_bind = 150;
+   uint32_t delay_send = 50;
    uint32_t delay_failsafe = 400;
    uint8_t  send_mode   = 0; // Broadcast
    uint8_t  recive_mode = 0; // NORMAL
@@ -142,19 +151,6 @@ typedef struct espRadio_config_t {
 } espRadio_config_t;
 
 // ====================================================================================
-
-
-
-// ==/  Memory data  /=====================================================================
-
-#define ESPRADIO_USE_LITTLEFS // comente para desabilitar
-
-#if defined( ESPRADIO_USE_LITTLEFS )
-#include <FS.h>
-#include <LittleFS.h>
-#endif
-
-// ========================================================================================
 
 
 class ESP_RADIO{
@@ -332,7 +328,8 @@ class ESP_RADIO{
       
       Flag_bind = true;
       call( BIND_ON );
-      call( FALL );
+      
+      if( Flag_online ) call( FALL );
 
       // update pack_bind
       memcpy(pack_bind.name, Devices[0].name, 20);
@@ -350,6 +347,7 @@ class ESP_RADIO{
 
     void bind_off(){
       Flag_bind = false;
+      Flag_bind_end = false;
       if( config.Radio_role == TX && !config.telemetry ){ disable_reciving(); }
       if( config.Radio_role == RX && !config.telemetry ){ disable_sending();  }
       call( BIND_OFF );
@@ -502,17 +500,9 @@ class ESP_RADIO{
         pack_bind.ID = 101;
         esp_now_send( broadcastAddress, (uint8_t *) &pack_bind, sizeof(pack_bind));
       }else{
-        print_MAC( Devices[device_connect_number].MAC );
-        Serial.printf( "\n[VERIFICANDO] PEER: %d\n", esp_now_is_peer_exist(Devices[device_connect_number].MAC) );
-        Serial.printf( "[VERIFICANDO] PEER BROADCAST: %d\n", esp_now_is_peer_exist(broadcastAddress) );
         pack_bind.ID = 102;
-        Serial.println("[VERIFICANDO] ola! eu mandei sim!");
-        #ifdef ESP32
-        esp_err_t x = esp_now_send( Devices[device_connect_number].MAC, (uint8_t *) &pack_bind, sizeof(pack_bind) );
-        Serial.printf( "[VERIFICANDO] Pacote de bind enviado %s sucesso! [%d]\n", (x==0?"com":"sem"), x );
-        #else
         esp_now_send( Devices[device_connect_number].MAC, (uint8_t *) &pack_bind, sizeof(pack_bind) );
-        #endif
+        //esp_now_send( broadcastAddress, (uint8_t *) &pack_bind, sizeof(pack_bind) );
       }
     }
 
@@ -528,10 +518,30 @@ class ESP_RADIO{
 
     void update(){
       
-      if( Flag_bind && config.Radio_role == TX ){
-        if( millis() >= bind_timeout ){
-          bind_timeout = millis() + config.delay_bind;
-          send_bind();
+      if( Flag_bind ){
+        if( Flag_bind_end ){
+          
+          peer( Devices[device_connect_number].MAC, true );
+          delay(100);
+
+          // Se for RX envia um pacote de bind de volta
+          if( config.Radio_role == RX ){
+            send_bind(); delay(60);
+            send_bind(); delay(60);
+            send_bind(); delay(60);
+          }
+
+          // encerra o bind
+          bind_off();
+          call( BINDED );
+
+        }else{
+          if( config.Radio_role == TX ){
+            if( millis() >= bind_timeout ){
+              bind_timeout = millis() + config.delay_bind;
+              send_bind();
+            }
+          }
         }
       }
 
@@ -596,28 +606,8 @@ class ESP_RADIO{
 
                 // pareia para poder enviar pacotes diretamente
                 device_connect_number = device_i;
-                Flag_online = true;
-                call( RISE );
-
-                Serial.printf( "\n[ onRecive VERIFICANDO ] PEER: %d\n", esp_now_is_peer_exist(Devices[device_connect_number].MAC) );
-                Serial.printf( "[ onRecive VERIFICANDO ] PEER BROADCAST: %d\n", esp_now_is_peer_exist(broadcastAddress) );
-
-                peer( mac, true );
-
-                delay(50);
                 
-                // Se for RX envia um pacote de bind de volta
-                if( config.Radio_role == RX ){
-                  send_bind();
-                  send_bind();
-                }
-
-                // update failsafe timeout
-                failsafe_timeout = millis() + config.delay_failsafe;
-
-                // encerra o bind
-                bind_off();
-                call( BINDED );
+                Flag_bind_end = true;
 
               }else{
                 call( BIND_FAIL );
@@ -1007,9 +997,10 @@ class ESP_RADIO{
     // Flags
     //boolean Flag_change = false;
     boolean Flag_online = false;
-    boolean Flag_bind   = false;
     boolean Flag_send   = false;
     boolean Flag_recive = false;
+    boolean Flag_bind   = false;
+    boolean Flag_bind_end = false;
 
     // Callback function
     int (*handle_espRadio_f)(int) = nullptr;
