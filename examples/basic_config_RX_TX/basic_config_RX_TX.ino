@@ -5,6 +5,8 @@
 #include "GPIO_CORE.h"
 GPIO_CORE btn(0,LOW,GPIO_IN_DIG_UP);
 
+#define LED 2
+
 #ifdef ESP32
 #define LED_STATE_ON HIGH
 #else
@@ -17,7 +19,7 @@ void setup() {
   Serial.println("\n\n\n");
 
   // Perifericos: led e botão
-  pinMode(2,OUTPUT);
+  pinMode(LED,OUTPUT);
   btn.begin();
   btn.filter_debounce(50,2);
 
@@ -61,14 +63,18 @@ void loop() {
 
   if( BIND ){
     BIND = espRadio.binding();
-    if(timeout <= millis()){ state = !state; led(state); timeout = millis() + 100; }
+    if( BIND ){
+      if(timeout <= millis()){ state = !state; led(state); timeout = millis() + 100; }
+    }else{
+      led(0);
+    }
   }
 
 }
 
 
 void led(boolean st){
-  digitalWrite(2,LED_STATE_ON == st);
+  digitalWrite(LED,LED_STATE_ON == st);
 }
 
 
@@ -91,14 +97,15 @@ int handle_radio( int action ){
   }else if( action == espRadio.RECIVE ){
     
     Serial.printf(
-      "\nNew data!\n[ Device[%d]: %s / %d ][ Connection mode:%d ][ LEN:%d ][ CODE: %d ][ ID: %d ][ ",
+      "\nNew data!\n[ Device[%d]: %s / %d ][ Connection mode:%d ][ LEN:%d ][ CODE: %d ][ ID: %d ][ SERVICE: %d ][ ",
       espRadio.device_connect_number,
       espRadio.device_connect().name,
       espRadio.device_connect().ID,
       espRadio.recive_mode(),
       espRadio.pack_rx.len,
       espRadio.pack_rx.code,
-      espRadio.pack_rx.ID
+      espRadio.pack_rx.ID,
+      espRadio.pack_rx.service
     );
     
     for(int i=0;i < ( espRadio.pack_rx.len > 20 ? 20 : espRadio.pack_rx.len );i++){
@@ -117,7 +124,7 @@ int handle_radio( int action ){
   else if( action == espRadio.CHANGE_RECIVE_MODE ){ Serial.println("[ CHANGE RECIVE MODE ]");  }
   else if( action == espRadio.CHANGE_SEND_MODE   ){ Serial.println("[ CHANGE SEND MODE ]");    }
   else if( action == espRadio.BIND_ON            ){ Serial.println("[ BIND ON ]");             }
-  else if( action == espRadio.BIND_OFF           ){ Serial.println("[ BIND OFF ]");            }
+  else if( action == espRadio.BIND_OFF           ){ Serial.println("[ BIND OFF ]"); led(0);    }
   else if( action == espRadio.BINDED             ){ Serial.println("[ BINDED ]");              }
   else if( action == espRadio.MEMORY_BEGIN       ){ Serial.println("[ MEMORY BEGIN ]");        }
   else if( action == espRadio.SAVED              ){ Serial.println("[ MEMORY SAVED ]");        }
@@ -132,11 +139,11 @@ int handle_radio( int action ){
   }else if( action == espRadio.RECOVER_CONFIG ){
     Serial.println("[ MEMORY RECOVER CONFIG ]");
     
-    espRadio.config.Radio_role  = espRadio.TX;
+    espRadio.config.Radio_role  = espRadio.RX;
     espRadio.config.telemetry   = false;
     //espRadio.config.delay_failsafe = 0;
     //espRadio.config.delay_send     = 0;
-    //espRadio.config.delay_bind     = 0;
+    espRadio.config.delay_bind     = 150;
     espRadio.config.send_mode   = espRadio.SEND_BROADCAST;
     espRadio.config.recive_mode = espRadio.PORT;
     //espRadio.config.mac_target;

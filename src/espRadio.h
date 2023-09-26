@@ -107,11 +107,12 @@ void ESP_RADIO_onRecive(uint8_t * mac, uint8_t *incomingData, uint8_t len);
 // pacotes de comunicação --------------------
 
 typedef struct pacote {
-    int32_t code = 1804;
-    int32_t len;
-    int32_t ID;
-    int32_t ch[20];
-    uint8_t MAC_rx[6];
+    int32_t  code = 1804;
+    int32_t  len;
+    int32_t  ID;
+    int32_t  ch[20];
+    uint8_t  MAC_rx[6];
+    uint32_t service = 0;
 } pacote;
 
 typedef struct pacote_bind { // pacote exclusivo para bind
@@ -626,7 +627,6 @@ class ESP_RADIO{
             }
 
             if( valid ){
-              Serial.print( " [VALIDO] " );
               if(!Flag_online){
                 device_connect_number = device_i;
                 Flag_online = true;
