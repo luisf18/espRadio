@@ -10,6 +10,25 @@
     espRadio V2.0
 
     tanto RX como TX recebem e enviam.
+
+    config:
+
+      send_mode:
+        broadcast: envia apenas em broadcast
+        Device:
+          TX: envia para config.mac_target
+          RX: envia para device_connect
+
+      recive_mode:
+        NORMAL:
+          TX: indiferente
+          RX: só recebe se o mac de origem estiver listado e se
+              o endereço mac destino do pacote for seu proprio mac
+        PORT:
+          TX: indiferente
+          RX: só recebe se o mac de origem estiver listado e se
+              o port for o mesmo local
+
     
     -----------------------------------------------------------------------
     |                                 |  TX             |  RX             |
@@ -111,10 +130,15 @@ typedef struct espRadio_device_t {
 } espRadio_device_t;
 
 typedef struct espRadio_config_t {
-   int32_t type;
-   int32_t color;
-   int32_t ID;
-   char    name[20];
+   uint8_t  Radio_role = 0; // RX
+   uint8_t  telemetry  = false;
+   uint32_t delay_bind = 50;
+   uint32_t delay_send = 100;
+   uint32_t delay_failsafe = 400;
+   uint8_t  send_mode   = 0; // Broadcast
+   uint8_t  recive_mode = 0; // NORMAL
+   uint8_t  mac_target[6];
+   uint8_t  port = 0;
 } espRadio_config_t;
 
 // ====================================================================================
@@ -145,8 +169,8 @@ class ESP_RADIO{
       RECIVE,
       SEND,
       
-      START_MODE_NORMAL,
-      START_MODE_PORT,
+      CHANGE_RECIVE_MODE,
+      CHANGE_SEND_MODE,
       
       BIND_ON,
       BIND_OFF,
@@ -166,23 +190,29 @@ class ESP_RADIO{
 
     };
 
-    enum TYPE{
+    enum RADIO_ID{
       RX = 0,
       TX,
-      RX_monitor,
-      TX_monitor,
+      RX_telemetry,
+      TX_telemetry,
     };
 
-    enum MODES{
-      NORMAL = 0, // check MAC destino
-      PORT,       // só checa a porta "ID"
-      PEER,       // realiza pedido de conexão e pareamento com confirmação de TX e RX
-      NORMAL_broadcast
+    enum RECIVE_MODES{
+      NORMAL = 0,  // check MAC destino
+      PORT         // só checa a porta "ID"
+      // RECIVE_PEER       // realiza pedido de conexão e pareamento com confirmação de TX e RX
+    };
+
+    enum SEND_MODES{
+      SEND_BROADCAST = 0,
+      SEND_DEVICE
     };
 
     //====/ ENUMs /=========================================
 
     //====/ begin and deinit /==============================
+
+    espRadio_config_t config;
     
     void deinit(){
       esp_now_deinit();
@@ -190,38 +220,47 @@ class ESP_RADIO{
       WiFi.mode(WIFI_OFF);
     }
     
-    void begin( int _type, int (*f)(int) ){
+    void begin( int (*f)(int) ){
 
-      // Configuração basica
-      type = _type;
-      function_type = _type;
       handle_espRadio_f = f;
       WiFi.macAddress(Devices[0].MAC); // get self mac
 
       // get data from memory
       MEMORY_begin();
-      //read_config();
+      read_config();
       read_devices();
 
-      // Inicia em modo NORMAL
-      mode( NORMAL_broadcast );
+      Serial.printf( "\n\n|X| RADIO CONFIG\n" );
+      Serial.printf( " | Name            %s\n", Devices[0].name );
+      Serial.printf( " | Radio role      %s\n", (config.Radio_role?"TX":"RX") );
+      Serial.printf( " | Telemetry       %s\n", (config.telemetry?"ON":"OFF") );
+      Serial.printf( " | Delay Failsafe  %d ms\n", config.delay_failsafe );
+      Serial.printf( " | Delay Send      %d ms\n", config.delay_send );
+      Serial.printf( " | Delay Bind      %d ms\n", config.delay_bind );
+      Serial.printf( " | Recive_mode     %s\n", (config.recive_mode==NORMAL?"NORMAL":"PORT") );      
+      Serial.printf( " | Send_mode       %s\n", (config.send_mode==SEND_BROADCAST?"BROADCAST":"DEVICE") );
+      Serial.printf( " | Port            %d\n", config.port );
+      Serial.printf( " | MAC target      %02x:%02x:%02x:%02x:%02x:%02x\n\n",
+        config.mac_target[0],
+        config.mac_target[1],
+        config.mac_target[2],
+        config.mac_target[3],
+        config.mac_target[4],
+        config.mac_target[5]
+      );
       
       // Init ESPNOW --------------------------------
-      Serial.println("ESPNOW - iniciando...");
-      
       WiFi.disconnect();
       WiFi.mode(WIFI_STA);
-      
       if(esp_now_init() != 0){
-        Serial.println("Error initializing ESP-NOW");
+        Serial.println("[Error] initializing ESP-NOW");
         return;
       }
-
       Serial.println("\n\nBEGIN ESPNOW!!");
 
 
       // Config. self device ------------------------
-      if( function_type == RX  ){ // Begin ESPNOW RX
+      if( config.Radio_role == RX  ){ // Begin ESPNOW RX
         
         #if defined(ESP8266)
         esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
@@ -229,11 +268,9 @@ class ESP_RADIO{
 
         enable_reciving();
 
-        if(type == RX_monitor) enable_sending();
-        
-        pack_bind.ID = 102;
+        if( config.telemetry ) enable_sending();
 
-      }else if( function_type == TX ){ // Begin ESPNOW TX
+      }else if( config.Radio_role == TX ){ // Begin ESPNOW TX
       
         #if defined(ESP8266)
         esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
@@ -241,9 +278,11 @@ class ESP_RADIO{
         
         enable_sending();
 
-        if( type == TX_monitor ) enable_reciving();
+        if( config.telemetry ) enable_reciving();
 
       }
+
+      Serial.printf( "[ begin VERIFICANDO ] PEER BROADCAST: %d\n", esp_now_is_peer_exist(broadcastAddress) );
 
       //if( mode == 0 ) esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
     }
@@ -251,47 +290,35 @@ class ESP_RADIO{
 
     //// MODOS ////////////////////////////////////////////////////////////
 
-    void enable_reciving(){
-      Flag_recive = true;
-      esp_now_register_recv_cb(ESP_RADIO_onRecive);
-    }
-
-    void disable_reciving(){
-      Flag_recive = false;
-      esp_now_unregister_recv_cb();
-    }
-
-    void enable_sending(){
-      Flag_send = true;
-      peer( broadcastAddress, true );
-    }
-
-    void disable_sending(){
-      Flag_send = false;
-      del_peer( broadcastAddress );
-    }
-
-    int mode(){
-      return Mode;
-    }
-
-    void mode( int _mode ){
-      switch(_mode){
-        case NORMAL: call( START_MODE_NORMAL ); Mode = NORMAL; break;
-        case PORT:   call( START_MODE_PORT   ); Mode = PORT;   break;
+    void enable_telemetry(){
+      config.telemetry = true;
+      if( config.Radio_role == RX ){
+        enable_sending();
+      }else if( config.Radio_role == TX ){
+        enable_reciving();
       }
     }
 
-    int  port(){
-      return Port;
+    void disable_telemetry(){
+      config.telemetry = false;
+      if( config.Radio_role == RX ){
+        disable_sending();
+      }else if( config.Radio_role == TX ){
+        disable_reciving();
+      }
     }
 
-    void port( uint8_t _port ){
-      Port = _port;
+    int recive_mode(){
+      return config.recive_mode;
     }
 
-    // int  rx_target(){ return Port; }
-    // void rx_target( uint8_t _port ){ Port = _port; }
+    void recive_mode( int _mode ){
+
+      if( _mode == NORMAL || _mode == NORMAL ){
+        config.recive_mode = _mode;
+        call( CHANGE_RECIVE_MODE );
+      }
+    }
 
     //// BIND /////////////////////////////////////////////////////////////
 
@@ -305,23 +332,27 @@ class ESP_RADIO{
       
       Flag_bind = true;
       call( BIND_ON );
+      call( FALL );
 
       // update pack_bind
       memcpy(pack_bind.name, Devices[0].name, 20);
       pack_bind.color = Devices[0].color;
 
-      if( function_type == TX ){
+      if( config.Radio_role == TX ){
         pack_bind.ID = 101;
         enable_reciving();
       }else{
+        enable_sending();
+        Serial.printf( "[ BIND_ON VERIFICANDO ] PEER BROADCAST: %d\n", esp_now_is_peer_exist(broadcastAddress) );
         pack_bind.ID = 102;
       }
     }
 
     void bind_off(){
       Flag_bind = false;
+      if( config.Radio_role == TX && !config.telemetry ){ disable_reciving(); }
+      if( config.Radio_role == RX && !config.telemetry ){ disable_sending();  }
       call( BIND_OFF );
-      if( type == TX ){ esp_now_unregister_recv_cb(); }
     }
 
     /// Dispositivos /////////////////////////////////////////////////////////////////
@@ -372,11 +403,17 @@ class ESP_RADIO{
       
       if( _index >= Devices_max_len ) return;
 
-      memcpy( Devices[_index].MAC,    mac,  6);
-      memcpy( Devices[_index].name, _name, 20);
+      String name = _name;
+
+      int pos = name.indexOf(',');
+      while( pos >= 0 ){ name.remove(pos,1); pos = name.indexOf(','); }
+
+      memcpy( Devices[_index].MAC, mac, 6);
+      memcpy( Devices[_index].name, name.c_str(), 20);
       Devices[_index].ID    = ID;
       Devices[_index].color = color;
-      Devices_len++;
+      
+      if( _index == Devices_len ) Devices_len++;
 
     }
 
@@ -430,39 +467,57 @@ class ESP_RADIO{
     pacote      pack_tx;
     pacote_bind pack_bind;
 
-    void send_broadcast(){
-      esp_now_send( broadcastAddress, (uint8_t *) &pack_tx, sizeof(pacote));
-      if( function_type == RX ){
-        #if defined(ESP8266)
-        esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
-        #endif
-      }
+    void set_mac_target( uint8_t i ){
+      if(i>=Devices_len) return;
+      memcpy(config.mac_target,Devices[i].MAC,6);
+      peer( config.mac_target, true );
+    }
+
+    void set_mac_target( uint8_t *mac ){
+      memcpy(config.mac_target,mac,6);
+      peer( config.mac_target, true );
     }
     
     void send(){
-      if( function_type == RX ){
-        esp_now_send( Devices[device_connect_number].MAC, (uint8_t *) &pack_tx, sizeof(pacote));
-        #if defined(ESP8266)
-        esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
-        #endif
-      }else{
-        esp_now_send( broadcastAddress, (uint8_t *) &pack_tx, sizeof(pacote));
+      memcpy( pack_tx.MAC_rx, config.mac_target, 6 );
+      uint8_t *mac = broadcastAddress;
+      if( config.send_mode != SEND_BROADCAST ){
+        if( config.Radio_role == RX ){
+          if( config.Radio_role == RX ){
+            if( device_connect_number == 0 ) return;
+            mac = Devices[device_connect_number].MAC;
+          }else{
+            mac = config.mac_target;
+          }
+        }
       }
+      esp_now_send( mac, (uint8_t *) &pack_tx, sizeof(pacote));
+      #if defined(ESP8266)
+      if( config.Radio_role == RX ) esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
+      #endif
     }
 
     void send_bind(){
-      if( type == TX ){
+      if( config.Radio_role == TX ){
+        pack_bind.ID = 101;
         esp_now_send( broadcastAddress, (uint8_t *) &pack_bind, sizeof(pack_bind));
       }else{
-        esp_now_send( Devices[device_connect_number].MAC, (uint8_t *) &pack_bind, sizeof(pack_bind));
+        print_MAC( Devices[device_connect_number].MAC );
+        Serial.printf( "\n[VERIFICANDO] PEER: %d\n", esp_now_is_peer_exist(Devices[device_connect_number].MAC) );
+        Serial.printf( "[VERIFICANDO] PEER BROADCAST: %d\n", esp_now_is_peer_exist(broadcastAddress) );
+        pack_bind.ID = 102;
+        Serial.println("[VERIFICANDO] ola! eu mandei sim!");
+        #ifdef ESP32
+        esp_err_t x = esp_now_send( Devices[device_connect_number].MAC, (uint8_t *) &pack_bind, sizeof(pack_bind) );
+        Serial.printf( "[VERIFICANDO] Pacote de bind enviado %s sucesso! [%d]\n", (x==0?"com":"sem"), x );
+        #else
+        esp_now_send( Devices[device_connect_number].MAC, (uint8_t *) &pack_bind, sizeof(pack_bind) );
+        #endif
       }
     }
 
     /// Atualização /////////////////////////////////////////////////////////////////
     pacote   pack_rx;
-    uint16_t failsafe_delay = 400;
-    uint16_t bind_delay     = 100;
-    uint16_t send_delay     = 100;
     uint16_t device_connect_number = 0;
 
     boolean online(){return Flag_online;}
@@ -473,25 +528,26 @@ class ESP_RADIO{
 
     void update(){
       
-      if( Flag_bind && function_type == TX ){
+      if( Flag_bind && config.Radio_role == TX ){
         if( millis() >= bind_timeout ){
-          bind_timeout = millis() + bind_delay;
+          bind_timeout = millis() + config.delay_bind;
           send_bind();
         }
       }
 
       if( !Flag_bind && Flag_send ){
         if( millis() >= send_timeout ){
-          send_timeout = millis() + send_delay;
+          send_timeout = millis() + config.delay_send;
           call(SEND);
           send();
         }
       }
       
-      if( Flag_online ){
+      if( !Flag_bind && Flag_online ){
         if( millis() >= failsafe_timeout ){
           Flag_online = false;
           del_peer( Devices[device_connect_number].MAC );
+          device_connect_number = 0;
           call( FALL );
         }
       }
@@ -521,7 +577,7 @@ class ESP_RADIO{
           // verifica bind
           if( Flag_bind ){
 
-            if( ( function_type == RX && pack.ID == 101 ) || ( function_type == TX && pack.ID == 102 ) ){ // TX -> RX , RX -> TX
+            if( ( config.Radio_role == RX && pack.ID == 101 ) || ( config.Radio_role == TX && pack.ID == 102 ) ){ // TX -> RX , RX -> TX
               // obtem informações de bind
               pacote_bind PB;
               memcpy(&PB, incomingData, sizeof(PB));
@@ -540,13 +596,24 @@ class ESP_RADIO{
 
                 // pareia para poder enviar pacotes diretamente
                 device_connect_number = device_i;
-                peer( Devices[device_connect_number].MAC, true );
+                Flag_online = true;
+                call( RISE );
+
+                Serial.printf( "\n[ onRecive VERIFICANDO ] PEER: %d\n", esp_now_is_peer_exist(Devices[device_connect_number].MAC) );
+                Serial.printf( "[ onRecive VERIFICANDO ] PEER BROADCAST: %d\n", esp_now_is_peer_exist(broadcastAddress) );
+
+                peer( mac, true );
+
+                delay(50);
                 
                 // Se for RX envia um pacote de bind de volta
-                if( function_type == RX ){
+                if( config.Radio_role == RX ){
                   send_bind();
                   send_bind();
                 }
+
+                // update failsafe timeout
+                failsafe_timeout = millis() + config.delay_failsafe;
 
                 // encerra o bind
                 bind_off();
@@ -561,21 +628,22 @@ class ESP_RADIO{
           }else if( pack.ID <= 100 ){ // reciving...
 
             boolean valid = false;
-
-            if( Mode == NORMAL ){
+            
+            if( config.recive_mode == NORMAL ){
               valid = (check_mac( pack.MAC_rx ) == 0);
-            }else if( Mode == PORT ){
-              valid = ( Port == pack.ID );
+            }else if( config.recive_mode == PORT ){
+              valid = ( config.port == pack.ID );
             }
 
             if( valid ){
+              Serial.print( " [VALIDO] " );
               if(!Flag_online){
                 device_connect_number = device_i;
                 Flag_online = true;
                 call( RISE );
                 peer( Devices[device_connect_number].MAC, true );
               }
-              failsafe_timeout = millis() + failsafe_delay;
+              failsafe_timeout = millis() + config.delay_failsafe;
               pack_rx = pack;
               call( RECIVE );
             }
@@ -654,6 +722,21 @@ class ESP_RADIO{
       LITTLEFS_save_config();
       #endif
       call( SAVED );
+    }
+
+    void str_to_mac( const char *msg, uint8_t *mac ){
+      String arg = msg;
+      int pos = arg.indexOf(':');
+      while( pos >= 0 ){ arg.remove(pos,1); pos = arg.indexOf(':'); }
+      // read mac
+      for(int k=5;k>=0;k--){
+        if( arg.length() > 0 ){
+          pos = arg.length()-2;
+          if(pos<0) pos = 0;
+          mac[k] = strtoul( arg.substring( pos ).c_str(), 0, 16 );
+          arg.remove(pos,2);
+        }
+      }
     }
 
     //// LITTLEFS /////////////////////////////////////////////////////////////
@@ -740,17 +823,7 @@ class ESP_RADIO{
             if( j == 0 && i > 0 ){ // MAC
               String mac = line.substring(i_begin,i_virgula);
               mac.trim();
-              int pos = mac.indexOf(':');
-              while( pos >= 0 ){ mac.remove(pos,1); pos = mac.indexOf(':'); }
-              // read mac
-              for(int k=5;k>=0;k--){
-                if( mac.length() > 0 ){
-                  pos = mac.length()-2;
-                  if(pos<0) pos = 0;
-                  Devices[i].MAC[k] = strtoul( mac.substring( pos ).c_str(), 0, 16 );
-                  mac.remove(pos,2);
-                }
-              }
+              str_to_mac( mac.c_str(), Devices[i].MAC );
 
             } else if( j == 1 ) { // Name
               String name = line.substring(i_begin,i_virgula);
@@ -792,15 +865,85 @@ class ESP_RADIO{
       // le o arquivo
       String content;
       if( !LITTLEFS_readFile(path_config,&content) ) return false;
-      Serial.println( "[FILE] Devices:\n" + content + "\n" );
+      Serial.println( "[FILE] Config:\n" + content + "\n" );
+
+      int i = 0;
+      int i_end = content.indexOf( '\n' );
+
+      while( i_end >= 0 ){
+        
+        String line = content.substring(0,i_end);
+
+        if( i > 0 ){ // pula o cabeçalho
+          int i_begin = 0;
+
+          boolean erro = false;
+
+          for(int j=0;j<9;j++){
+
+            int i_virgula = line.indexOf(',',i_begin);
+            
+            if( (j<3) && (i_virgula<0) ){ erro = true; break; }
+
+            String arg = ( i_virgula >= 0 ? line.substring(i_begin,i_virgula) : line.substring(i_begin) );
+            arg.trim();
+            Serial.printf("[arg %d] %s\n",j,arg.c_str());
+
+                 if( j == 0 ) { config.Radio_role     = arg.toInt(); }
+            else if( j == 1 ) { config.telemetry      = arg.toInt(); }
+            else if( j == 2 ) { config.delay_failsafe = arg.toInt(); }
+            else if( j == 3 ) { config.delay_send     = arg.toInt(); }
+            else if( j == 4 ) { config.delay_bind     = arg.toInt(); }
+            else if( j == 5 ) { config.send_mode      = arg.toInt(); }
+            else if( j == 6 ) { config.recive_mode    = arg.toInt(); }
+            else if( j == 7 ) { config.port           = arg.toInt(); }
+            else if( j == 8 ) { str_to_mac( arg.c_str(), config.mac_target ); }
+
+            i_begin = i_virgula+1;
+          }
+
+        }
+
+        i++; if( i >= 2 ) break;
+        
+        content.remove(0,i_end+1);
+        i_end = content.indexOf('\n');
+
+      }
+
+      Devices_len = i;
+      
       return true;
     }
 
     
     void LITTLEFS_save_config(){
-      //...
+      
+      File file = LittleFS.open(path_config, "w");
+      file.println( "Radio role, Telemetry, Delay faillsafe[ms], Delay send[ms], Delay bind[ms], Send_mode, Recive_mode, Port, MAC target" );
+
+      file.printf(
+        "%d, %d, %d, %d, %d, %d, %d, %d, %02x:%02x:%02x:%02x:%02x:%02x\n",
+        config.Radio_role,
+        config.telemetry,
+        config.delay_failsafe,
+        config.delay_send,
+        config.delay_bind,
+        config.send_mode,
+        config.recive_mode,
+        config.port,
+        config.mac_target[0],
+        config.mac_target[1],
+        config.mac_target[2],
+        config.mac_target[3],
+        config.mac_target[4],
+        config.mac_target[5]
+      );
+
+      file.close();
+
     }
-    
+
     void LITTLEFS_save_devices(){
       
       File file = LittleFS.open(path_devices, "w");
@@ -828,14 +971,28 @@ class ESP_RADIO{
     
   private:
     
+    void enable_reciving(){
+      Flag_recive = true;
+      esp_now_register_recv_cb(ESP_RADIO_onRecive);
+    }
+
+    void disable_reciving(){
+      Flag_recive = false;
+      esp_now_unregister_recv_cb();
+    }
+
+    void enable_sending(){
+      Flag_send = true;
+      peer( broadcastAddress, true );
+    }
+
+    void disable_sending(){
+      Flag_send = false;
+      del_peer( broadcastAddress );
+    }
+
     const char * path_devices = "/espRadio_devices.csv";
     const char * path_config  = "/espRadio_config.csv";
-
-    // basic config.
-    uint8_t function_type = RX; // RX or TX
-    uint8_t type = RX;
-    uint8_t Mode = NORMAL;
-    uint8_t Port = 0;
     
     // Device list
     //uint8_t Device_last_connect = 1;
@@ -848,8 +1005,8 @@ class ESP_RADIO{
     uint32_t send_timeout = 0;
     
     // Flags
-    boolean Flag_online = false;
     //boolean Flag_change = false;
+    boolean Flag_online = false;
     boolean Flag_bind   = false;
     boolean Flag_send   = false;
     boolean Flag_recive = false;
