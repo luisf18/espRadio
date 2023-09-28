@@ -149,6 +149,7 @@ typedef struct espRadio_config_t {
    uint8_t  recive_mode = 0; // NORMAL
    uint8_t  mac_target[6];
    uint8_t  port = 0;
+   char     text[100];
 } espRadio_config_t;
 
 // ====================================================================================
@@ -871,27 +872,35 @@ class ESP_RADIO{
 
           for(int j=0;j<9;j++){
 
-            int i_virgula = line.indexOf(',',i_begin);
+            String arg;
             
-            if( (j<3) && (i_virgula<0) ){ erro = true; break; }
-
-            String arg = ( i_virgula >= 0 ? line.substring(i_begin,i_virgula) : line.substring(i_begin) );
+            if( j < 9 ){
+              int i_virgula = line.indexOf(',',i_begin);
+              if( i_virgula<0 ){
+                erro = true;
+                break;
+              }
+              arg = line.substring(i_begin,i_virgula);
+              i_begin = i_virgula+1;
+            }else{
+              arg = line.substring(i_begin);
+            }
+            
             arg.trim();
             Serial.printf("[arg %d] %s\n",j,arg.c_str());
 
-                 if( j == 0 ) { config.Radio_role     = arg.toInt(); }
-            else if( j == 1 ) { config.telemetry      = arg.toInt(); }
-            else if( j == 2 ) { config.delay_failsafe = arg.toInt(); }
-            else if( j == 3 ) { config.delay_send     = arg.toInt(); }
-            else if( j == 4 ) { config.delay_bind     = arg.toInt(); }
-            else if( j == 5 ) { config.send_mode      = arg.toInt(); }
-            else if( j == 6 ) { config.recive_mode    = arg.toInt(); }
-            else if( j == 7 ) { config.port           = arg.toInt(); }
-            else if( j == 8 ) { str_to_mac( arg.c_str(), config.mac_target ); }
-
-            i_begin = i_virgula+1;
-          }
-
+            switch (j) {
+              case 0: config.Radio_role     = arg.toInt(); break;
+              case 1: config.telemetry      = arg.toInt(); break;
+              case 2: config.delay_failsafe = arg.toInt(); break;
+              case 3: config.delay_send     = arg.toInt(); break;
+              case 4: config.delay_bind     = arg.toInt(); break;
+              case 5: config.send_mode      = arg.toInt(); break;
+              case 6: config.recive_mode    = arg.toInt(); break;
+              case 7: config.port           = arg.toInt(); break;
+              case 8: str_to_mac( arg.c_str(), config.mac_target ); break;
+              case 9: arg.toCharArray(config.text,100); break;
+            }
         }
 
         i++; if( i >= 2 ) break;
@@ -910,10 +919,10 @@ class ESP_RADIO{
     void LITTLEFS_save_config(){
       
       File file = LittleFS.open(path_config, "w");
-      file.println( "Radio role, Telemetry, Delay faillsafe[ms], Delay send[ms], Delay bind[ms], Send_mode, Recive_mode, Port, MAC target" );
+      file.println( "Radio role, Telemetry, Delay faillsafe[ms], Delay send[ms], Delay bind[ms], Send_mode, Recive_mode, Port, MAC target, text" );
 
       file.printf(
-        "%d, %d, %d, %d, %d, %d, %d, %d, %02x:%02x:%02x:%02x:%02x:%02x\n",
+        "%d, %d, %d, %d, %d, %d, %d, %d, %02x:%02x:%02x:%02x:%02x:%02x, %s\n",
         config.Radio_role,
         config.telemetry,
         config.delay_failsafe,
@@ -927,7 +936,8 @@ class ESP_RADIO{
         config.mac_target[2],
         config.mac_target[3],
         config.mac_target[4],
-        config.mac_target[5]
+        config.mac_target[5],
+        config.text
       );
 
       file.close();
