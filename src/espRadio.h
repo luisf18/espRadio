@@ -149,7 +149,7 @@ typedef struct espRadio_config_t {
    uint8_t  recive_mode = 0; // NORMAL
    uint8_t  mac_target[6];
    uint8_t  port = 0;
-   char     text[100];
+   char     text[100] = "";
 } espRadio_config_t;
 
 // ====================================================================================
@@ -246,6 +246,19 @@ class ESP_RADIO{
         config.mac_target[4],
         config.mac_target[5]
       );
+
+      Serial.printf( " | text: \n" );
+      String text = config.text;
+
+      int len = text.length();
+      while( len > 0 ){
+        int end = text.indexOf('\n') + 1;
+        if( end <= 0 ) end = len;
+        Serial.printf( " |   %s", text.substring( 0, end ).c_str() );
+        text.remove( 0, end );
+        len = text.length();
+      }
+
       
       // Init ESPNOW --------------------------------
       WiFi.disconnect();
@@ -870,7 +883,7 @@ class ESP_RADIO{
 
           boolean erro = false;
 
-          for(int j=0;j<9;j++){
+          for(int j=0;j<10;j++){
 
             String arg;
             
@@ -901,6 +914,7 @@ class ESP_RADIO{
               case 8: str_to_mac( arg.c_str(), config.mac_target ); break;
               case 9: arg.toCharArray(config.text,100); break;
             }
+          }
         }
 
         i++; if( i >= 2 ) break;
