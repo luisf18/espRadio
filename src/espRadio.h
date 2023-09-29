@@ -561,7 +561,7 @@ class ESP_RADIO{
       }
 
       if( !Flag_bind && Flag_send ){
-        if( millis() >= send_timeout ){
+        if( config.delay_send > 0 && millis() >= send_timeout ){
           send_timeout = millis() + config.delay_send;
           call(SEND);
           send();
