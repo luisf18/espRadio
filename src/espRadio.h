@@ -108,8 +108,8 @@ void ESP_RADIO_onRecive(uint8_t * mac, uint8_t *incomingData, uint8_t len);
 
 typedef struct pacote {
     int32_t  code = 1804;
-    int32_t  len;
-    int32_t  ID;
+    int32_t  len = 0;
+    int32_t  ID = 0;
     int32_t  ch[20];
     uint8_t  MAC_rx[6];
     uint32_t service = 0;
@@ -165,6 +165,7 @@ class ESP_RADIO{
       RISE = 0,
       FALL, 
       RECIVE,
+      RECIVE_INTERRUPT,
       SEND,
       
       CHANGE_RECIVE_MODE,
@@ -558,23 +559,29 @@ class ESP_RADIO{
             }
           }
         }
-      }
+      }else{
+        if( Flag_send ){
+          if( config.delay_send > 0 && millis() >= send_timeout ){
+            send_timeout = millis() + config.delay_send;
+            call(SEND);
+            send();
+          }
+        }
 
-      if( !Flag_bind && Flag_send ){
-        if( config.delay_send > 0 && millis() >= send_timeout ){
-          send_timeout = millis() + config.delay_send;
-          call(SEND);
-          send();
+        if( Flag_online ){
+          if( millis() >= failsafe_timeout ){
+            Flag_online = false;
+            del_peer( Devices[device_connect_number].MAC );
+            device_connect_number = 0;
+            call( FALL );
+          }
         }
-      }
-      
-      if( !Flag_bind && Flag_online ){
-        if( millis() >= failsafe_timeout ){
-          Flag_online = false;
-          del_peer( Devices[device_connect_number].MAC );
-          device_connect_number = 0;
-          call( FALL );
+
+        if( Flag_new_data ){
+          Flag_new_data = false;
+          call( RECIVE );
         }
+
       }
 
     }
@@ -596,6 +603,18 @@ class ESP_RADIO{
         // recebe pacote
         pacote pack;
         memcpy(&pack, incomingData, sizeof(pack));
+
+        Serial.printf(
+          "\nNew data!\n[ Device[%d]: %s / %d ][ Connection mode:%d ][ LEN:%d ][ CODE: %d ][ ID: %d ][ SERVICE: %d ][ ",
+          device_connect_number,
+          device_connect().name,
+          device_connect().ID,
+          recive_mode(),
+          pack.len,
+          pack.code,
+          pack.ID,
+          pack.service
+        );
         
         if(pack.code == 1804){
 
@@ -649,7 +668,8 @@ class ESP_RADIO{
               }
               failsafe_timeout = millis() + config.delay_failsafe;
               pack_rx = pack;
-              call( RECIVE );
+              Flag_new_data = true;
+              call( RECIVE_INTERRUPT );
             }
 
           }
@@ -1025,6 +1045,7 @@ class ESP_RADIO{
     boolean Flag_recive = false;
     boolean Flag_bind   = false;
     boolean Flag_bind_end = false;
+    boolean Flag_new_data = false;
 
     // Callback function
     int (*handle_espRadio_f)(int) = nullptr;
