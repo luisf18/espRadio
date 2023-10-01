@@ -218,8 +218,14 @@ class ESP_RADIO{
       WiFi.disconnect();
       WiFi.mode(WIFI_OFF);
     }
-    
+
     void begin( int (*f)(int) ){
+      void begin( f, true );
+    }
+    
+    void begin( int (*f)(int), boolean en ){
+
+      Flag_enable = en;
 
       handle_espRadio_f = f;
       WiFi.macAddress(Devices[0].MAC); // get self mac
@@ -272,31 +278,65 @@ class ESP_RADIO{
 
 
       // Config. self device ------------------------
+      if( Flag_enable ){
+        if( config.Radio_role == RX  ){ // Begin ESPNOW RX
+          
+          #if defined(ESP8266)
+          esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
+          #endif
+
+          enable_reciving();
+
+          if( config.telemetry ) enable_sending();
+
+        }else if( config.Radio_role == TX ){ // Begin ESPNOW TX
+        
+          #if defined(ESP8266)
+          esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
+          #endif
+          
+          enable_sending();
+
+          if( config.telemetry ) enable_reciving();
+
+        }
+      }
+
+      // Serial.printf( "[ begin VERIFICANDO ] PEER BROADCAST: %d\n", esp_now_is_peer_exist(broadcastAddress) );
+
+      //if( mode == 0 ) esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
+    }
+
+    void enable(){
+      // Config. self device ------------------------
+      Flag_enable = true;
       if( config.Radio_role == RX  ){ // Begin ESPNOW RX
         
         #if defined(ESP8266)
         esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
         #endif
-
+        
         enable_reciving();
-
+        
         if( config.telemetry ) enable_sending();
-
-      }else if( config.Radio_role == TX ){ // Begin ESPNOW TX
       
+      }else if( config.Radio_role == TX ){ // Begin ESPNOW TX
+        
         #if defined(ESP8266)
         esp_now_set_self_role(ESP_NOW_ROLE_CONTROLLER);
         #endif
         
         enable_sending();
-
+        
         if( config.telemetry ) enable_reciving();
 
       }
+    }
 
-      Serial.printf( "[ begin VERIFICANDO ] PEER BROADCAST: %d\n", esp_now_is_peer_exist(broadcastAddress) );
-
-      //if( mode == 0 ) esp_now_set_self_role(ESP_NOW_ROLE_SLAVE);
+    void disable(){
+      Flag_enable = false;
+      disable_reciving();
+      disable_sending();
     }
 
 
@@ -533,55 +573,58 @@ class ESP_RADIO{
     }
 
     void update(){
-      
-      if( Flag_bind ){
-        if( Flag_bind_end ){
-          
-          peer( Devices[device_connect_number].MAC, true );
-          delay(100);
 
-          // Se for RX envia um pacote de bind de volta
-          if( config.Radio_role == RX ){
-            send_bind(); delay(60);
-            send_bind(); delay(60);
-            send_bind(); delay(60);
-          }
+      if(Flag_enable){
 
-          // encerra o bind
-          bind_off();
-          call( BINDED );
+        if( Flag_bind ){
+          if( Flag_bind_end ){
+            
+            peer( Devices[device_connect_number].MAC, true );
+            delay(100);
 
-        }else{
-          if( config.Radio_role == TX ){
-            if( millis() >= bind_timeout ){
-              bind_timeout = millis() + config.delay_bind;
-              send_bind();
+            // Se for RX envia um pacote de bind de volta
+            if( config.Radio_role == RX ){
+              send_bind(); delay(60);
+              send_bind(); delay(60);
+              send_bind(); delay(60);
+            }
+
+            // encerra o bind
+            bind_off();
+            call( BINDED );
+
+          }else{
+            if( config.Radio_role == TX ){
+              if( millis() >= bind_timeout ){
+                bind_timeout = millis() + config.delay_bind;
+                send_bind();
+              }
             }
           }
-        }
-      }else{
-        if( Flag_send ){
-          if( config.delay_send > 0 && millis() >= send_timeout ){
-            send_timeout = millis() + config.delay_send;
-            call(SEND);
-            send();
+        }else{
+          if( Flag_send ){
+            if( config.delay_send > 0 && millis() >= send_timeout ){
+              send_timeout = millis() + config.delay_send;
+              call(SEND);
+              send();
+            }
           }
-        }
 
-        if( Flag_online ){
-          if( millis() >= failsafe_timeout ){
-            Flag_online = false;
-            del_peer( Devices[device_connect_number].MAC );
-            device_connect_number = 0;
-            call( FALL );
+          if( Flag_online ){
+            if( millis() >= failsafe_timeout ){
+              Flag_online = false;
+              del_peer( Devices[device_connect_number].MAC );
+              device_connect_number = 0;
+              call( FALL );
+            }
           }
-        }
 
-        if( Flag_new_data ){
-          Flag_new_data = false;
-          call( RECIVE );
-        }
+          if( Flag_new_data ){
+            Flag_new_data = false;
+            call( RECIVE );
+          }
 
+        }
       }
 
     }
@@ -1040,6 +1083,7 @@ class ESP_RADIO{
     
     // Flags
     //boolean Flag_change = false;
+    boolean Flag_enable = false;
     boolean Flag_online = false;
     boolean Flag_send   = false;
     boolean Flag_recive = false;
